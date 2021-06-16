@@ -1,20 +1,5 @@
-select array_agg((c.ch) order by i.index)
---    array_agg(c.ch order by i.index)
-from (select 'Мир'::text as str) t
-cross join decode(t.str, 'escape') as s(str)
-         cross join length(s.str) l(length)
-         cross join generate_series(0, l.length - 1) i(index)
-         cross join lateral (select get_byte(s.str, i.index)::bit(8):: bit varying(8)) c(ch);
-
-select get_bit(b'0111'::bit(3)::bit varying(8), 1);
-
-select set_byte('\000'::bytea, 0, get_byte('a'::bytea, 0)::int4);
-
-select get_bit('\000'::bytea, 0);
-
-select length(set_bit(E'\\000'::bytea, 0, 1));
-
-select set_bit( export_tools.form_empty_bytea(3) , 2, 1);
+drop schema if exists export_tools cascade;
+create schema export_tools;
 
 drop function if exists export_tools.form_empty_bytea(str_length int4);
 create or replace function export_tools.form_empty_bytea(str_length int4) returns bytea as $$
@@ -24,12 +9,6 @@ create or replace function export_tools.form_empty_bytea(str_length int4) return
         return bstr;
     end;
 $$ language plpgsql;
-
-select * from export_tools.form_empty_bytea(3) s(str)
-    cross join length(s.str) l(length)
-    cross join generate_series(0, l.length - 1) i(index)
-         cross join lateral (select get_byte(s.str, i.index)::bit(8):: bit varying(8)) c(ch);
-
 
 drop function if exists export_tools.bytea_to_bit_varying_arr(bstr bytea);
 create or replace function export_tools.bytea_to_bit_varying_arr(bstr bytea) returns bit varying [] as $$
@@ -44,11 +23,8 @@ create or replace function export_tools.bytea_to_bit_varying_arr(bstr bytea) ret
     end;
 $$ language plpgsql;
 
-select * from export_tools.bytea_to_bit_varying_arr('Хабр');
-
 drop function if exists export_tools.text_to_bytea(str text);
 create or replace function export_tools.text_to_bytea(str text) returns bytea as $$ begin return decode(str, 'escape'); end; $$ language plpgsql;
-select * from export_tools.text_to_bytea('Хабр');
 
 drop function if exists export_tools.json_bit_varying_arr_to_bytea(arr bit varying[]);
 create or replace function export_tools.json_bit_varying_arr_to_bytea(arr bit varying []) returns bytea as $$
@@ -62,20 +38,15 @@ create or replace function export_tools.json_bit_varying_arr_to_bytea(arr bit va
     begin
 
         bit_array = (select array_agg(b.bit order by i.index, l.index) from unnest(arr) with ordinality i(el, index) cross join generate_series(0, length(i.el::bit varying) - 1) l(index) cross join get_bit(i.el, l.index) b(bit));
---         new_length = length(bit_array);
         new_length = ceil((select sum(length(a.el)) from unnest(arr) a(el)) / 8.0);
         res = export_tools.form_empty_bytea(new_length);
-
---         raise notice 'new length % % % %', new_length, res, bit_array, (select sum(length(a.el)) from unnest(arr) a(el));
 
         bit_curr = 1;
         byte_index = 0;
         bit_index = 7;
         buffer_byte = B'0000000'::bit(8)::int;
         while byte_index < new_length loop
---             buffer_byte = set_bit(buffer_byte, bit_index, bit_array[bit_curr]);
                buffer_byte = buffer_byte << 1 | coalesce(bit_array[bit_curr], 0);
---             raise notice 'buffer byte % % % %', buffer_byte, bit_curr, bit_index, bit_array[bit_curr];
             bit_curr = bit_curr + 1;
 
             if bit_index = 0 or bit_curr > new_length * 8 then
@@ -92,14 +63,9 @@ create or replace function export_tools.json_bit_varying_arr_to_bytea(arr bit va
     end;
     $$ language plpgsql;
 
-select *, export_tools.bytea_to_bit_varying_arr(s) from export_tools.json_bit_varying_arr_to_bytea(array[B'011', B'0000100']:: bit varying[]) c(s);
-
-select export_tools.bytea_to_bit_varying_arr(set_bit(E'\\000'::bytea, 7, 1));
-
--- select 128 >> 7
-
--- create type export_tools.qr_correction_level_type as enum('L', 'M', 'Q', 'H');
-drop table if exists export_tools.qr_settings;
+drop type if exists export_tools.qr_correction_level_type cascade;
+create type export_tools.qr_correction_level_type as enum('L', 'M', 'Q', 'H');
+drop table if exists export_tools.qr_settings cascade;
 create table export_tools.qr_settings (
     qr_settingsid serial primary key,
     qr_version int4,
@@ -110,7 +76,6 @@ create table export_tools.qr_settings (
 );
 alter table export_tools.qr_settings add column bit_data_length int4;
 alter table export_tools.qr_settings add column alignment_positions _int4;
--- alter table export_tools.qr_settings drop column code_version;
 alter table export_tools.qr_settings add column code_version bit varying(6)[];
 alter table export_tools.qr_settings add column bits_length int4;
 
@@ -212,7 +177,7 @@ with version_table as (
                      (5, 106, 84, 60, 44),
                      -- 5
                      (6, 134, 106, 74, 58),
-                     (7, 154, 122, 86, 64),
+                     (7, 154, 122, 86, 66),
                      (8, 192, 152, 108, 84),
                      (9, 230, 180, 130, 98),
                      (10, 271, 213, 151, 119),
@@ -266,6 +231,8 @@ all_length as (
 )
 update export_tools.qr_settings s set byte_length = p.byte_length
 from all_length p where s.qr_version = p.version and s.qr_correction_level = p.correction_level;
+
+update export_tools.qr_settings set byte_length = bits_length / 8;
 
 update export_tools.qr_settings s set bit_data_length = case when s.qr_version < 10 then 8 else 16 end;
 select * from export_tools.qr_settings;
@@ -482,8 +449,6 @@ all_length as (
 update export_tools.qr_settings s set code_version = p.value
 from all_length p where s.qr_version = p.version;
 
-select * from export_tools.qr_settings;
-
 drop function if exists export_tools.get_qr_version(_byte_length int4, _qr_correction_level export_tools.qr_correction_level_type);
 create or replace function export_tools.get_qr_version(_byte_length int4,
                                                        _qr_correction_level export_tools.qr_correction_level_type) returns int4 as
@@ -499,10 +464,6 @@ begin
     return _version;
 end;
 $$ language plpgsql;
-
-select * from export_tools.get_qr_version(800,'M');
-
--- select (1::bit(8)) << 12
 
 drop function if exists export_tools.qr_size(qr_version int4);
 create or replace function export_tools.qr_size(qr_version int4) returns int4 as $$
@@ -536,7 +497,7 @@ create or replace function export_tools.qr_insert_pic_to_array(qr_array int[][],
 --                 raise notice 'qr_insert_pic_to_array % %, %, %, %, %, %, %, %', qr_array[curr_y + y][curr_x + x] = pic[curr_y][curr_x], curr_y, curr_x, curr_y + y, curr_x + x, qr_array[curr_y + y][curr_x + x],  pic[curr_y][curr_x], pic, qr_array;
 
                 if size_y >= curr_y + y and size_x >= curr_x + x then
-                    has_current_cell_cross = coalesce(temp_qr_array[curr_y + y][curr_x + x], 0) >> 7 = 0;
+                    has_current_cell_cross = export_tools.qr_is_editable_cell(temp_qr_array[curr_y + y][curr_x + x]);
                     has_cross_with_default_cells = has_cross_with_default_cells or not has_current_cell_cross;
                     if (replace_default or has_current_cell_cross) then
                         temp_qr_array[curr_y + y][curr_x + x] = pic[curr_y][curr_x];
@@ -547,26 +508,6 @@ create or replace function export_tools.qr_insert_pic_to_array(qr_array int[][],
     return case when replace_default or not has_cross_with_default_cells then temp_qr_array else qr_array end;
     end;
     $$ language plpgsql;
-
-select * from export_tools.qr_insert_pic_to_array('{{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null},{null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null}}',
-    4, 4, '{{1, 1, 1, 1, 1, 1, 1}, {1, 0, 0, 0, 0, 0, 1}, {1, 0, 1, 1, 1, 0, 1}}'
-    );
-
-select * from export_tools.qr_insert_pic_to_array('{{null}}',
-    4, 4, '{{1, 1, 1, 1, 1, 1, 1}, {1, 0, 0, 0, 0, 0, 1}, {1, 0, 1, 1, 1, 0, 1}}'
-    );
-
-
-select
-*
---        array_length(t.arr, 2), generate_subscripts(t.arr, 1)
-from (select '{{1, 1, 1, 1, 1, 1, 1}, {1, 0, 0, 0, 0, 0, 1}, {1, 0, 1, 1, 1, 0, 1}}'::int[][]) t(arr)
--- cross join unnest(t.arr)
-;
-
-select E'\u2587', E'\u25AF';
-
--- select 128 >> 7;
 
 drop function if exists export_tools.qr_form_array(size_x int4, size_y int4, default_value int);
 create or replace function export_tools.qr_form_array(size_x int4, size_y int4, default_value int default null::int) returns int[][] as $$
@@ -596,10 +537,6 @@ create or replace function export_tools.qr_transpose_array(arr int[][]) returns 
     end
     $$ language plpgsql;
 
-select export_tools.qr_transpose_array(array[array[1, 2], array[3, 4], array[5, 6]]);
-
-select 7::bit(3);
-
 drop function if exists export_tools.varying_arr_to_int_arr(bit_arr bit varying[], add_value int);
 create or replace function export_tools.varying_arr_to_int_arr(bit_arr bit varying[], add_value int default 0) returns int[] as $$
     begin
@@ -607,9 +544,7 @@ create or replace function export_tools.varying_arr_to_int_arr(bit_arr bit varyi
     end;
     $$ language plpgsql;
 
-select * from export_tools.varying_arr_to_int_arr(array[B'011', B'0000100']:: bit varying[], 160);
-
-select *, export_tools.bytea_to_bit_varying_arr(s) from export_tools.json_bit_varying_arr_to_bytea(array[B'011', B'0000100']:: bit varying[]) c(s);
+-- select * from export_tools.varying_arr_to_int_arr(array[b'00000000', null, b'11111111'], 0);
 
 drop table if exists export_tools.qr_mask_data;
 create table export_tools.qr_mask_data (
@@ -655,8 +590,6 @@ values('M', B'00', B'000', B'101010000010010'),
        ('Q', B'11', B'101', B'010000110000011'),
        ('Q', B'11', B'110', B'010111011011010'),
        ('Q', B'11', B'111', B'010101111101101');
-
-select * from export_tools.qr_mask_data;
 
 drop table if exists export_tools.qr_galua_coeffs;
 create table export_tools.qr_galua_coeffs (
@@ -922,36 +855,12 @@ from (values (0, 1),
 (253, 71),
 (254, 142)) v(v1, v2);
 
-select * from export_tools.qr_galua_coeffs;
-
 drop function if exists export_tools.show_bit_arr_as_int_arr(_values bit varying(8)[]);
 create or replace function export_tools.show_bit_arr_as_int_arr(_values bit varying(8)[]) returns int[] as $$
     begin
         return (select array_agg(i.el::bit(8)::int order by i.index) from unnest(_values) with ordinality i(el, index));
     end;
     $$ language plpgsql;
-
--- drop function if exists export_tools.qr_calc_corrs_bytes(data_block bit varying(8)[], corrs_block_count int4);
--- create or replace function export_tools.qr_calc_corrs_bytes(data_block  bit varying(8)[], corrs_block_count int4) returns bit varying(8)[] as $$
---     declare corrs_qr_gen_array bit varying(8)[];
---     declare current_index int4;
---     declare b bit varying(8);
---     begin
---         select a.gen_array into corrs_qr_gen_array from export_tools.qr_gen_array a where a.correction_byte_count = corrs_block_count;
---
---         raise notice 'corrs_qr_gen_array % % %', corrs_block_count, export_tools.show_bit_arr_as_int_arr(data_block), export_tools.show_bit_arr_as_int_arr(corrs_qr_gen_array);
---
---         for current_index in (select generate_subscripts(data_block, 1)) loop
---             b = (select c.value from export_tools.qr_galua_coeffs c where c.galua = data_block[current_index] limit 1);
---             raise notice 'qr_galua_coeffs % % % %', current_index, export_tools.show_bit_arr_as_int_arr(array[data_block[current_index]]), export_tools.show_bit_arr_as_int_arr(array[b]), export_tools.show_bit_arr_as_int_arr(corrs_qr_gen_array);
---         end loop;
---
---         raise notice 'corrs_qr_gen_array % % %', corrs_block_count, export_tools.show_bit_arr_as_int_arr(data_block), export_tools.show_bit_arr_as_int_arr(corrs_qr_gen_array);
---         return corrs_qr_gen_array;
---     end;
--- $$ language plpgsql;
-
-select b'11111111'::bit varying(8) + b'1'::bit varying(8);
 
 drop function if exists export_tools.qr_add_to_gen_array(gen_array bit varying(8)[], b bit varying(8));
 create or replace function export_tools.qr_add_to_gen_array(gen_array bit varying(8)[], b bit varying(8)) returns bit varying(8)[] as $$
@@ -977,6 +886,8 @@ create or replace function export_tools.qr_add_gen_array_and_corr_bytes(gen_arra
     end;
     $$ language plpgsql;
 
+select * from export_tools.qr_settings;
+
 drop function if exists export_tools.qr_calc_corrs_bytes(data_block bit varying(8)[], corrs_block_count int4);
 create or replace function export_tools.qr_calc_corrs_bytes(data_block  bit varying(8)[], corrs_block_count int4) returns bit varying(8)[] as $$
     declare corrs_block  bit varying(8)[];
@@ -992,15 +903,15 @@ create or replace function export_tools.qr_calc_corrs_bytes(data_block  bit vary
 
         for current_index in (select generate_series(1, data_length)) loop
             a = corrs_block[1];
-            if a <> b'0'::bit varying(8) then
+            if a is not null and a <> b'0'::bit varying(8) then
                 b = (select c.value from export_tools.qr_galua_coeffs c where c.galua = a limit 1);
                 corrs_block =  export_tools.qr_add_gen_array_and_corr_bytes(export_tools.qr_add_to_gen_array(corrs_qr_gen_array, b), corrs_block[2:] || array[b'0'::bit varying(8)]);
-                raise notice 'qr_galua_coeffs % % % % % ', current_index, export_tools.show_bit_arr_as_int_arr(array[data_block[current_index]]), export_tools.show_bit_arr_as_int_arr(array[b]), export_tools.show_bit_arr_as_int_arr(corrs_block), export_tools.show_bit_arr_as_int_arr(export_tools.qr_add_to_gen_array(corrs_qr_gen_array, b));
+            else
+                corrs_block = corrs_block[2:] || array[b'0'::bit varying(8)];
             end if;
         end loop;
 
-        raise notice 'corrs_qr_gen_array % % % % %', data_length, corrs_block_count, export_tools.show_bit_arr_as_int_arr(corrs_block), export_tools.show_bit_arr_as_int_arr(data_block), export_tools.show_bit_arr_as_int_arr(corrs_qr_gen_array);
-        return corrs_block;
+        return corrs_block[:corrs_block_count];
     end;
 $$ language plpgsql;
 
@@ -1014,31 +925,30 @@ create or replace function export_tools.fill_qr_version(_qr_array int[][], _mask
     begin
 
         qr_size = array_length(_qr_array, 1);
-        _qr_array = export_tools.qr_insert_pic_to_array(_qr_array, frame_width + 9, qr_size - frame_width - 8 + 1, array[array[161]]);
+        _qr_array = export_tools.qr_insert_pic_to_array(_qr_array, frame_width + 9, qr_size - frame_width - 8 + 1, array[array[160 | 1]], true);
 
-        for curr_coords in (select * from (values (1, frame_width + 9, frame_width + 1, qr_size - frame_width, frame_width + 9),
-                                                  (2, frame_width + 9, frame_width + 2, qr_size - frame_width - 1, frame_width + 9),
-                                                  (3, frame_width + 9, frame_width + 3, qr_size - frame_width - 2, frame_width + 9),
-                                                  (4, frame_width + 9, frame_width + 4, qr_size - frame_width - 3, frame_width + 9),
-                                                  (5, frame_width + 9, frame_width + 5, qr_size - frame_width - 4, frame_width + 9),
+        for curr_coords in (select * from (values (15, frame_width + 9, frame_width + 1, qr_size - frame_width, frame_width + 9),
+                                                  (14, frame_width + 9, frame_width + 2, qr_size - frame_width - 1, frame_width + 9),
+                                                  (13, frame_width + 9, frame_width + 3, qr_size - frame_width - 2, frame_width + 9),
+                                                  (12, frame_width + 9, frame_width + 4, qr_size - frame_width - 3, frame_width + 9),
+                                                  (11, frame_width + 9, frame_width + 5, qr_size - frame_width - 4, frame_width + 9),
                                                   --
-                                                  (6, frame_width + 9, frame_width + 6, qr_size - frame_width - 5, frame_width + 9),
-                                                  (7, frame_width + 9, frame_width + 8, qr_size - frame_width - 6, frame_width + 9),
+                                                  (10, frame_width + 9, frame_width + 6, qr_size - frame_width - 5, frame_width + 9),
+                                                  (9, frame_width + 9, frame_width + 8, qr_size - frame_width - 6, frame_width + 9),
                                                   (8, frame_width + 9, frame_width + 9, qr_size - frame_width - 7, frame_width + 9),
-                                                  (9, frame_width + 8, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 2),
-                                                  (10, frame_width + 8 - 2, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 3),
+                                                  (7, frame_width + 8, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 2),
+                                                  (6, frame_width + 8 - 2, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 3),
                                                   --
-                                                  (11, frame_width + 8 - 3, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 4),
-                                                  (12, frame_width + 8 - 4, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 5),
-                                                  (13, frame_width + 8 - 5, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 6),
-                                                  (14, frame_width + 8 - 6, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 7),
-                                                  (15, frame_width + 8 - 7, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 8)
+                                                  (5, frame_width + 8 - 3, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 4),
+                                                  (4, frame_width + 8 - 4, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 5),
+                                                  (3, frame_width + 8 - 5, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 6),
+                                                  (2, frame_width + 8 - 6, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 7),
+                                                  (1, frame_width + 8 - 7, frame_width + 9, frame_width + 9, qr_size - frame_width - 8 + 8)
 
             ) v(index, x1, y1, x2, y2)) loop
             _mask_data[curr_coords.index] = _mask_data[curr_coords.index] | 160;
-            _qr_array = export_tools.qr_insert_pic_to_array(_qr_array, curr_coords.x1, curr_coords.y1, array[array[_mask_data[curr_coords.index]]]);
-            _qr_array = export_tools.qr_insert_pic_to_array(_qr_array, curr_coords.x2, curr_coords.y2, array[array[_mask_data[curr_coords.index]]]);
---             raise notice 'row % % % % % %', curr_coords.index, curr_coords.x1, curr_coords.y1, curr_coords.x2, curr_coords.y2, mask_data[curr_coords.index];
+            _qr_array = export_tools.qr_insert_pic_to_array(_qr_array, curr_coords.x1, curr_coords.y1, array[array[_mask_data[curr_coords.index]]], true);
+            _qr_array = export_tools.qr_insert_pic_to_array(_qr_array, curr_coords.x2, curr_coords.y2, array[array[_mask_data[curr_coords.index]]], true);
         end loop;
         return _qr_array;
     end;
@@ -1052,19 +962,6 @@ create or replace function export_tools.fill_qr_version_data(_qr_array int[][], 
         ), 160));
     end;
     $$ language plpgsql;
-
- select
-    string_agg((
-        select string_agg(lpad(coalesce(t.arr[y.index][x.index]::text, ''), 3, ' '), ' ')
-        from generate_subscripts(t.arr, 2) x(index)
-                   ), E'\n')
-from export_tools.fill_qr_version_data( export_tools.qr_fill_tech_info(40), 'M', 1) t(arr)
-cross join generate_subscripts(t.arr, 1) y(index);
-
-
-select * from export_tools.fill_qr_version_data( export_tools.qr_fill_tech_info(1), 'M', 1);
-
-select 160 | 0;
 
 drop function if exists export_tools.qr_fill_tech_info(_qr_version int4);
 create or replace function export_tools.qr_fill_tech_info(_qr_version int4) returns int[][] as $$
@@ -1126,16 +1023,15 @@ create or replace function export_tools.qr_fill_tech_info(_qr_version int4) retu
 
         -- отрисовка полос синхронизации
         temp_array = (select array_agg(i.ind % 2 | 128) from generate_series(1, qr_size - frame_width * 2 - 16) i(ind));
-        raise notice 'temp_array %', temp_array;
+--         raise notice 'temp_array %', temp_array;
         qr_array = export_tools.qr_insert_pic_to_array(qr_array, frame_width + 8 + 1, frame_width + 7, array[temp_array], true);
         qr_array = export_tools.qr_insert_pic_to_array(qr_array, frame_width + 7, frame_width + 8 + 1, export_tools.qr_transpose_array(array[temp_array]), true);
 
         -- информация про версию кода
         if array_length(qr_version_setting.code_version, 1) is not null then
-            raise notice 'code_version % % % %', frame_width + 1, qr_size - frame_width - 8 - 3,  qr_version_setting.code_version, (select array_agg(export_tools.varying_arr_to_int_arr(array[e.el], 64)) from unnest(qr_version_setting.code_version) e(el));
             temp_array = (select array_agg(export_tools.varying_arr_to_int_arr(array[e.el], 64)) from unnest(qr_version_setting.code_version) e(el));
-            qr_array = export_tools.qr_insert_pic_to_array(qr_array, frame_width + 1, qr_size - frame_width - 8 - 3, temp_array);
-            qr_array = export_tools.qr_insert_pic_to_array(qr_array, qr_size - frame_width - 8 - 3, frame_width + 1, export_tools.qr_transpose_array(temp_array));
+            qr_array = export_tools.qr_insert_pic_to_array(qr_array, frame_width + 1, qr_size - frame_width - 8 - 2, temp_array);
+            qr_array = export_tools.qr_insert_pic_to_array(qr_array, qr_size - frame_width - 8 - 2, frame_width + 1, export_tools.qr_transpose_array(temp_array));
         end if;
 
         return qr_array;
@@ -1154,10 +1050,9 @@ drop function if exists export_tools.show_qr_table_in_unicode(qr_table int[][]);
 create or replace function export_tools.show_qr_table_in_unicode(qr_table int[][]) returns text as $$
     declare str text;
     begin
---         select E'\u2587', E'\u25AF';
          select
             string_agg((
-                select string_agg(case when coalesce(t.arr[y.index][x.index], 0) % 2 = 0 then E'\u2B1C' else E'\u2B1B' end, ' ')
+                select string_agg(case when coalesce(t.arr[y.index][x.index], 0) % 2 = 0 then E'\u2B1C' when export_tools.qr_is_editable_cell(t.arr[y.index][x.index]) then E'\u26AB' else E'\u2B1B' end, '')
                 from generate_subscripts(t.arr, 2) x(index)
             ), E'\n')
             into str
@@ -1176,16 +1071,201 @@ create or replace function export_tools.qr_fill_empty_data_byte(bstr bytea, need
     declare ind int4 = 1;
     begin
         filled_length = greatest(need_length - length(bstr), 0);
-        temp_str = export_tools.form_empty_bytea(filled_length);
+        temp_str = coalesce(export_tools.form_empty_bytea(filled_length), ''::bytea);
         for ind in (select generate_series(1, filled_length)) loop
             temp_str = set_byte(temp_str, ind - 1, case when ind % 2 = 1 then b'11101100' else b'00010001' end ::int);
-            raise notice 'set_byte % % % % %', filled_length,  temp_str, ind, case when ind % 2 = 1 then b'11101100' else b'00010001' end ::int, length(bstr || temp_str);
         end loop;
-        return bstr || temp_str;
+        return substring(bstr || temp_str for need_length);
     end;
     $$ language plpgsql;
 
-select export_tools.qr_fill_empty_data_byte('poltavaenergozbut'::bytea, 24);
+select export_tools.qr_fill_empty_data_byte('http://jb.poe.pl.ua/1234'::bytea, 24);
+
+drop function if exists export_tools.calc_block_length(data_length int4, block_count int4);
+create or replace function export_tools.calc_block_length(data_length int4, block_count int4) returns int4[] as $$
+    begin
+        return (select array_agg(data_length / block_count + case when  g.index > (block_count - (data_length % block_count)) then 1 else 0 end) from generate_series(1, block_count) g(index));
+    end;
+    $$ language plpgsql;
+select export_tools.calc_block_length(439, 34);
+
+drop function if exists export_tools.prepare_data_and_corrs_blocks_stream(qr_content_data bit varying(8)[], qr_version_setting export_tools.qr_settings);
+create or replace function export_tools.prepare_data_and_corrs_blocks_stream(qr_content_data bit varying(8)[], qr_version_setting export_tools.qr_settings) returns bit varying(8)[] as $$
+    declare qr_stream bit varying(8)[];
+    declare current_block_index int4;
+    declare current_byte_index int4;
+    declare block_lengths int4[];
+    declare max_block_length int4;
+    declare current_data_block bit varying(8)[];
+    declare data_blocks bit varying(8)[][] = array[]::bit varying(8)[][];
+    declare corrs_blocks bit varying(8)[][] = array[]::bit varying(8)[][];
+    begin
+        block_lengths = export_tools.calc_block_length(qr_version_setting.byte_length, qr_version_setting.block_count);
+        max_block_length = (select max(l.len) from unnest(block_lengths) l(len));
+        for current_block_index in (select generate_subscripts(block_lengths, 1)) loop
+            current_data_block = qr_content_data[:block_lengths[current_block_index]]; -- || case when max_block_length = block_lengths[current_block_index] then array[]::bit varying(8)[] else array[null]::bit varying(8)[] end;
+            corrs_blocks = corrs_blocks || array[export_tools.qr_calc_corrs_bytes(current_data_block, qr_version_setting.correction_byte_count)];
+            raise notice 'calc_block_length % % % % % %', current_block_index, block_lengths, block_lengths[current_block_index], export_tools.show_bit_arr_as_int_arr(current_data_block),  export_tools.show_bit_arr_as_int_arr(export_tools.qr_calc_corrs_bytes(current_data_block, qr_version_setting.correction_byte_count)), export_tools.show_bit_arr_as_int_arr(qr_content_data);
+            current_data_block = current_data_block || case when max_block_length = block_lengths[current_block_index] then array[]::bit varying(8)[] else array[null]::bit varying(8)[] end;
+            data_blocks = data_blocks || array[current_data_block];
+            qr_content_data = qr_content_data[block_lengths[current_block_index]+1:];
+        end loop;
+
+        qr_stream = array[]::bit varying(8)[];
+        for current_byte_index in (select generate_series(1, max_block_length)) loop
+            for current_block_index in (select generate_subscripts(data_blocks, 1)) loop
+                if data_blocks[current_block_index][current_byte_index] is not null then
+                    qr_stream = array_append(qr_stream, data_blocks[current_block_index][current_byte_index]);
+                    raise notice 'data_blocks % % % % %', max_block_length, array_length(data_blocks, 1), current_block_index, current_byte_index, data_blocks[current_block_index][current_byte_index]::bit(8)::int;
+                end if;
+            end loop;
+        end loop;
+        for current_byte_index in (select generate_subscripts(corrs_blocks, 2)) loop
+            for current_block_index in (select generate_subscripts(corrs_blocks, 1)) loop
+                if corrs_blocks[current_block_index][current_byte_index] is not null then
+                    qr_stream = array_append(qr_stream, corrs_blocks[current_block_index][current_byte_index]);
+                    raise notice 'corrs_blocks % % % % %', array_length(corrs_blocks, 2), array_length(corrs_blocks, 1), current_block_index, current_byte_index, corrs_blocks[current_block_index][current_byte_index]::bit(8)::int;
+                end if;
+            end loop;
+        end loop;
+
+        return qr_stream;
+    end;
+    $$ language plpgsql;
+
+select *, export_tools.show_qr_table_in_unicode(qr) from export_tools.qr_form_data_array('poltavaenergozbut'::bytea, 'M') t(qr);
+
+select * from export_tools.qr_settings;
+
+drop function if exists export_tools.qr_is_editable_cell(value int);
+create or replace function export_tools.qr_is_editable_cell(value int) returns boolean as $$
+    begin
+        return value is null or (value >> 5) = 0;
+    end;
+    $$ language plpgsql;
+
+drop function if exists export_tools.qr_is_masked_cell(value int);
+create or replace function export_tools.qr_is_masked_cell(value int) returns boolean as $$
+    begin
+        return export_tools.qr_is_editable_cell(value);
+--         return value is null or (value >> 7) = 0;
+    end;
+    $$ language plpgsql;
+
+
+select export_tools.qr_is_editable_cell(64);
+select export_tools.qr_is_masked_cell(64);
+
+drop function if exists export_tools.qr_fill_data_stream(_qr_array int[][],  _qr_content_array int[]);
+create or replace function export_tools.qr_fill_data_stream(_qr_array int[][],  _qr_content_array int[]) returns int[][] as $$
+    declare _qr_size int4;
+    declare frame_width int4 = 4;
+    declare x int4;
+    declare y int4;
+    declare byte_index int4;
+    declare data_length int4;
+    declare base_qr_size int4;
+    declare base_index_x int4;
+    declare base_index_y int4;
+    declare current_column int4;
+    declare route_up boolean;
+    declare need_change_route boolean = false;
+    begin
+        _qr_size = array_length(_qr_array, 1);
+        base_qr_size = _qr_size - frame_width * 2;
+        base_index_x = _qr_size - frame_width;
+        base_index_y = _qr_size - frame_width;
+        x = 0;
+        y = 0;
+        current_column = 0;
+        route_up = true;
+
+        byte_index = 1;
+        data_length = array_length(_qr_content_array, 1);
+        while (x < base_qr_size and y < base_qr_size) and byte_index <= data_length loop
+--             raise notice 'qr_fill_data_stream % % % % % % % %', byte_index, x, y, need_change_route, route_up, base_index_x - x, base_index_y - y, _qr_content_array;
+            if need_change_route then
+                route_up = not route_up;
+                current_column = current_column + 2;
+                if (base_index_x - current_column) = 11 then
+                    base_index_x = base_index_x - 1;
+                end if;
+                x = current_column + ((x) % 2);
+                if export_tools.qr_is_editable_cell(_qr_array[base_index_y - y][base_index_x - x]) then
+                    _qr_array[base_index_y - y][base_index_x - x] = _qr_content_array[byte_index];
+--                     _qr_array[base_index_y - y][base_index_x - x] =  byte_index;
+                    byte_index = byte_index + 1;
+--                     raise notice 'qr_is_editable_cell % % % % % %', byte_index, x, y, base_index_x - x, base_index_y - y, _qr_content_array[byte_index];
+                end if;
+--                 raise notice 'need_change_route % % % % % % % % %', byte_index, x, y, current_column, need_change_route, route_up, base_index_x - x, base_index_y - y, _qr_content_array;
+            else
+                if export_tools.qr_is_editable_cell(_qr_array[base_index_y - y][base_index_x - x]) then
+                    _qr_array[base_index_y - y][base_index_x - x] =  _qr_content_array[byte_index];
+--                     _qr_array[base_index_y - y][base_index_x - x] =  byte_index;
+                    byte_index = byte_index + 1;
+--                     raise notice 'qr_is_editable_cell % % % % % %', byte_index, x, y, base_index_x - x, base_index_y - y, _qr_content_array[byte_index];
+                end if;
+                y = y + case when route_up then 1 else -1 end * (x % 2);
+            end if;
+            x = current_column + ((x + 1) % 2);
+            need_change_route = (y < 0 or y >= base_qr_size) and not need_change_route;
+            y = greatest(least(y, base_qr_size - 1), 0);
+        end loop;
+
+        return _qr_array;
+    end;
+    $$ language plpgsql;
+
+ select
+    string_agg((
+        select string_agg(lpad(coalesce(case when t.arr[y.index][x.index] not in (192, 128, 129, 160, 161) then t.arr[y.index][x.index]::text end, ''), 3, ' '), ' ')
+        from generate_subscripts(t.arr, 2) x(index)
+                   ), E'\n')
+from export_tools.qr_form_data_array('poltavaenergozbut poltavaoblenergo'::bytea, 'M') t(arr)
+cross join generate_subscripts(t.arr, 1) y(index);
+
+ select
+    string_agg((
+        select string_agg(lpad(coalesce(t.arr[y.index][x.index]::text, ''), 3, ' '), ' ')
+        from generate_subscripts(t.arr, 2) x(index)
+                   ), E'\n')
+from export_tools.qr_form_data_array('poltavaenergozbut'::bytea, 'M') t(arr)
+cross join generate_subscripts(t.arr, 1) y(index);
+
+select export_tools.show_qr_table_in_unicode(qr) from export_tools.qr_form_data_array('poltavaenergozbut'::bytea, 'M') t(qr);
+
+drop function if exists export_tools.qr_mask_data(_qr_array int[][], _qr_correction_level export_tools.qr_correction_level_type, _mask int4);
+create or replace function export_tools.qr_mask_data(_qr_array int[][], _qr_correction_level export_tools.qr_correction_level_type, _mask int4) returns int[][] as $$
+    declare frame_width int4 = 4;
+    declare qr_size int4;
+    declare x int4;
+    declare y int4;
+
+    begin
+        _qr_array = export_tools.fill_qr_version_data( _qr_array, _qr_correction_level, _mask);
+        qr_size = array_length(_qr_array, 1) - frame_width * 2;
+        frame_width = frame_width + 1;
+        for y in (select generate_series(0, qr_size - 1)) loop
+             for x in(select generate_series(0, qr_size - 1)) loop
+                if export_tools.qr_is_masked_cell(_qr_array[frame_width + y][frame_width + x] ) then
+                    _qr_array[frame_width + y][frame_width + x] = case when (case _mask
+                        when 0 then (x + y) % 2
+                        when 1 then y % 2
+                        when 2 then x % 3
+                        when 3 then (x + y) % 3
+                        when 4 then (x/3 + y/2) % 2
+                        when 5 then (x * y) % 2 + (x * y) % 3
+                        when 6 then ((x * y) % 3 + (x * y)) % 2
+                        when 7 then ((x * y) % 3 + x + y) % 2
+                    end = 0) then ((coalesce(_qr_array[frame_width + y][frame_width + x], 0) >> 1) << 1) + ((coalesce(_qr_array[frame_width + y][frame_width + x], 0) + 1) % 2) else coalesce(_qr_array[frame_width + y][frame_width + x], 0) end;
+                end if;
+            end loop;
+        end loop;
+
+        return _qr_array;
+    end;
+    $$ language plpgsql;
+
 
 drop function if exists export_tools.qr_form_data_array(_qr_content bytea, _qr_correction_level export_tools.qr_correction_level_type);
 create or replace function export_tools.qr_form_data_array(_qr_content bytea, _qr_correction_level export_tools.qr_correction_level_type default 'M'::export_tools.qr_correction_level_type) returns int[][] as $$
@@ -1193,49 +1273,75 @@ create or replace function export_tools.qr_form_data_array(_qr_content bytea, _q
     declare _qr_version int4;
     declare _qr_content_length int4;
     declare _qr_content_data bit varying(8)[];
---     declare _qr_content_array int[];
+    declare _qr_content_array int[];
     declare qr_version_setting export_tools.qr_settings;
+
+    declare is_valid_version boolean;
     begin
         _qr_content_length = length(_qr_content);
-        _qr_version = export_tools.get_qr_version(_qr_content_length,_qr_correction_level);
+        _qr_version = export_tools.get_qr_version(_qr_content_length,_qr_correction_level) - 1;
 
-        select * into qr_version_setting from export_tools.qr_settings s where s.qr_version = _qr_version and s.qr_correction_level = _qr_correction_level limit 1;
+        is_valid_version = false;
+        while not is_valid_version loop
+            _qr_version = _qr_version + 1;
+            select * into qr_version_setting from export_tools.qr_settings s where s.qr_version = _qr_version and s.qr_correction_level = _qr_correction_level limit 1;
 
-        _qr_content_data = export_tools.bytea_to_bit_varying_arr(
-            export_tools.qr_fill_empty_data_byte(
-                export_tools.json_bit_varying_arr_to_bytea(array[
+            _qr_content_data = export_tools.bytea_to_bit_varying_arr(
+                export_tools.qr_fill_empty_data_byte(
+                    export_tools.json_bit_varying_arr_to_bytea(array[
+                            b'0100'::bit varying(4),
+                            case when qr_version_setting.bit_data_length = 8 then _qr_content_length::bit(8)::bit varying(8) else  _qr_content_length::bit(16)::bit varying(16) end
+                        ] || export_tools.bytea_to_bit_varying_arr(_qr_content) || array[b'0000'::bit varying(4)]), qr_version_setting.byte_length
+                    )
+                );
+            is_valid_version = array_length(_qr_content_data, 1) <= qr_version_setting.byte_length;
+        end loop;
+        _qr_content_array = export_tools.varying_arr_to_int_arr(export_tools.prepare_data_and_corrs_blocks_stream(_qr_content_data, qr_version_setting));
+
+        raise notice 'qr_form_data_array % % % % % %', _qr_content, _qr_content_length, _qr_correction_level, _qr_version, _qr_content_data, export_tools.json_bit_varying_arr_to_bytea(array[
                         b'0100'::bit varying(4),
                         case when qr_version_setting.bit_data_length = 8 then _qr_content_length::bit(8)::bit varying(8) else  _qr_content_length::bit(16)::bit varying(16) end
-                    ] || export_tools.bytea_to_bit_varying_arr(_qr_content)), qr_version_setting.byte_length
-                )
-            );
---
---         _qr_content_array = export_tools.varying_arr_to_int_arr(export_tools.bytea_to_bit_varying_arr(
---             export_tools.qr_fill_empty_data_byte(
---                 export_tools.json_bit_varying_arr_to_bytea(array[
---                         b'0100'::bit varying(4),
---                         case when qr_version_setting.bit_data_length = 8 then _qr_content_length::bit(8)::bit varying(8) else  _qr_content_length::bit(16)::bit varying(16) end
---                     ] || export_tools.bytea_to_bit_varying_arr(_qr_content)), qr_version_setting.byte_length
---                 )
---             ));
-        raise notice 'qr_form_data_array % % % % %', _qr_content, _qr_content_length, _qr_correction_level, _qr_version, _qr_content_data;
+                    ] || export_tools.bytea_to_bit_varying_arr(_qr_content) || array[b'0000'::bit varying(4)]);
         _qr_array = export_tools.qr_fill_tech_info(_qr_version);
         _qr_array = export_tools.fill_qr_version(_qr_array, (select array_agg(0) from generate_series(1, 18) g));
+        _qr_array = export_tools.qr_fill_data_stream(_qr_array, _qr_content_array);
+--         _qr_array = export_tools.qr_mask_data(_qr_array, _qr_correction_level, 1);
 
         return _qr_array;
     end;
     $$ language plpgsql;
 
+
+select * from export_tools.qr_settings where qr_version = 7;
+select * from export_tools.qr_gen_array where correction_byte_count = 26;
+
+-- select *, export_tools.calc_block_length(byte_length, block_count) from export_tools.qr_settings where qr_version = 2;
+
 select *, export_tools.show_qr_table_in_unicode(qr) from export_tools.qr_form_data_array('poltavaenergozbut'::bytea, 'M') t(qr);
 
+select
+    export_tools.show_qr_table_in_unicode(qr),
+    export_tools.show_qr_table_in_unicode(m0.m),
+    export_tools.show_qr_table_in_unicode(m1.m),
+    export_tools.show_qr_table_in_unicode(m2.m),
+    export_tools.show_qr_table_in_unicode(m3.m),
+    export_tools.show_qr_table_in_unicode(m4.m),
+    export_tools.show_qr_table_in_unicode(m5.m),
+    export_tools.show_qr_table_in_unicode(m6.m),
+    export_tools.show_qr_table_in_unicode(m7.m),
+    *
+from export_tools.qr_form_data_array('Боровик Лілія Миколаївна https://www.olx.ua/d/uk/obyavlenie/2-kmnatna-kvartira-na-podol-vroremont-IDLSdxt.html'::bytea, 'M') t(qr)
+-- from export_tools.qr_fill_tech_info(1) t(qr)
+cross join export_tools.qr_mask_data(t.qr, 'M', 0) m0(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 1) m1(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 2) m2(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 3) m3(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 4) m4(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 5) m5(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 6) m6(m)
+cross join export_tools.qr_mask_data(t.qr, 'M', 7) m7(m)
+;
+
+select * from export_tools.qr_mask_data;
+
 select * from export_tools.bytea_to_bit_varying_arr('poltavaenergozbut'::bytea);
-
-
--- select * from export_tools.qr_settings
-
-
--- cross join unnest(t.arr) with ordinality e--(el, i);
-
--- select (array[0, 1, 2])[1]
-
--- select export_tools.qr_transpose_array(array[array[1, 0, 1, 0, 1, 1], array[1, 0, 0, 0, 0, 0], array[1, 0, 0, 1, 1, 0]]);
