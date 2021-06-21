@@ -1,11 +1,12 @@
 drop schema if exists export_tools cascade;
 create schema export_tools;
 
-drop function if exists export_tools.form_empty_bytea(str_length int4);
-create or replace function export_tools.form_empty_bytea(str_length int4) returns bytea as $$
+-- drop function if exists export_tools.form_empty_bytea(str_length int4);
+drop function if exists export_tools.form_empty_bytea(str_length int4, default_value bytea);
+create or replace function export_tools.form_empty_bytea(str_length int4, default_value bytea default null::bytea) returns bytea as $$
     declare bstr bytea;
     begin
-        select string_agg(E'\\000'::bytea, '') into bstr from generate_series(1, str_length) i;
+        select string_agg(coalesce(default_value, E'\\000'::bytea), '') into bstr from generate_series(1, str_length) i;
         return bstr;
     end;
 $$ language plpgsql;
@@ -23,8 +24,12 @@ create or replace function export_tools.bytea_to_bit_varying_arr(bstr bytea) ret
     end;
 $$ language plpgsql;
 
+
 drop function if exists export_tools.text_to_bytea(str text);
 create or replace function export_tools.text_to_bytea(str text) returns bytea as $$ begin return decode(str, 'escape'); end; $$ language plpgsql;
+
+drop function if exists export_tools.bytea_to_text(str text);
+create or replace function export_tools.bytea_to_text(bstr bytea) returns text as $$ begin return encode(bstr, 'escape'); end; $$ language plpgsql;
 
 drop function if exists export_tools.json_bit_varying_arr_to_bytea(arr bit varying[]);
 create or replace function export_tools.json_bit_varying_arr_to_bytea(arr bit varying []) returns bytea as $$
@@ -1305,7 +1310,7 @@ create or replace function export_tools.qr_form_data_array(_qr_content bytea, _q
         _qr_array = export_tools.qr_fill_tech_info(_qr_version);
         _qr_array = export_tools.fill_qr_version(_qr_array, (select array_agg(0) from generate_series(1, 18) g));
         _qr_array = export_tools.qr_fill_data_stream(_qr_array, _qr_content_array);
---         _qr_array = export_tools.qr_mask_data(_qr_array, _qr_correction_level, 1);
+        _qr_array = export_tools.qr_mask_data(_qr_array, _qr_correction_level, 1);
 
         return _qr_array;
     end;
@@ -1321,25 +1326,25 @@ select *, export_tools.show_qr_table_in_unicode(qr) from export_tools.qr_form_da
 
 select
     export_tools.show_qr_table_in_unicode(qr),
-    export_tools.show_qr_table_in_unicode(m0.m),
-    export_tools.show_qr_table_in_unicode(m1.m),
-    export_tools.show_qr_table_in_unicode(m2.m),
-    export_tools.show_qr_table_in_unicode(m3.m),
-    export_tools.show_qr_table_in_unicode(m4.m),
-    export_tools.show_qr_table_in_unicode(m5.m),
-    export_tools.show_qr_table_in_unicode(m6.m),
-    export_tools.show_qr_table_in_unicode(m7.m),
+--     export_tools.show_qr_table_in_unicode(m0.m),
+--     export_tools.show_qr_table_in_unicode(m1.m),
+--     export_tools.show_qr_table_in_unicode(m2.m),
+--     export_tools.show_qr_table_in_unicode(m3.m),
+--     export_tools.show_qr_table_in_unicode(m4.m),
+--     export_tools.show_qr_table_in_unicode(m5.m),
+--     export_tools.show_qr_table_in_unicode(m6.m),
+--     export_tools.show_qr_table_in_unicode(m7.m),
     *
 from export_tools.qr_form_data_array('Боровик Лілія Миколаївна https://www.olx.ua/d/uk/obyavlenie/2-kmnatna-kvartira-na-podol-vroremont-IDLSdxt.html'::bytea, 'M') t(qr)
 -- from export_tools.qr_fill_tech_info(1) t(qr)
-cross join export_tools.qr_mask_data(t.qr, 'M', 0) m0(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 1) m1(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 2) m2(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 3) m3(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 4) m4(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 5) m5(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 6) m6(m)
-cross join export_tools.qr_mask_data(t.qr, 'M', 7) m7(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 0) m0(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 1) m1(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 2) m2(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 3) m3(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 4) m4(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 5) m5(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 6) m6(m)
+-- cross join export_tools.qr_mask_data(t.qr, 'M', 7) m7(m)
 ;
 
 select * from export_tools.qr_mask_data;
